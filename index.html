@@ -1,0 +1,17 @@
+function doPost(e) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var data = e.parameter;
+  sheet.appendRow([
+    data.timestamp, 
+    data.nama, 
+    data.whatsapp, 
+    data.alamat, 
+    data.layanan, 
+    data.paket, 
+    data.harga
+  ]);
+  return ContentService.createTextOutput("Success");
+}
+4.  **Deploy**: Klik `Deploy` > `New Deployment`. Pilih type `Web App`. Setel `Who has access` ke `Anyone`.
+
+https://script.google.com/macros/s/AKfycbwl8eXHKG7o7hEcmWOTf96Xx6x18JiKZAfxnOjGxz_8PXYX5q71DcuIIMqhruXIpkhq5Q/exec
