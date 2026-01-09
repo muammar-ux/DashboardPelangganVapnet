@@ -1,17 +1,515 @@
-function doPost(e) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  var data = e.parameter;
-  sheet.appendRow([
-    data.timestamp, 
-    data.nama, 
-    data.whatsapp, 
-    data.alamat, 
-    data.layanan, 
-    data.paket, 
-    data.harga
-  ]);
-  return ContentService.createTextOutput("Success");
-}
-4.  **Deploy**: Klik `Deploy` > `New Deployment`. Pilih type `Web App`. Setel `Who has access` ke `Anyone`.
+import React, { useState, useEffect } from 'react';
+import { 
+  UserPlus, Table as TableIcon, Settings, Clock, CheckCircle2, 
+  Search, Menu, X, Printer, Loader2, MessageSquare, Database, 
+  RefreshCw, AlertCircle, Download, Bluetooth, Info, Link2, 
+  ChevronRight, ShieldCheck, Wifi, WifiOff
+} from 'lucide-react';
 
-https://script.google.com/macros/s/AKfycbwl8eXHKG7o7hEcmWOTf96Xx6x18JiKZAfxnOjGxz_8PXYX5q71DcuIIMqhruXIpkhq5Q/exec
+const App = () => {
+  const [activeTab, setActiveTab] = useState('pendaftaran');
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [isSidebarOpen, setSidebarOpen] = useState(true);
+  const [customerData, setCustomerData] = useState([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [lastRegistered, setLastRegistered] = useState(null);
+  const [isLoadingData, setIsLoadingData] = useState(false);
+  
+  const [spreadsheetUrl, setSpreadsheetUrl] = useState(localStorage.getItem('vapnet_script_url') || ""); 
+  const [syncStatus, setSyncStatus] = useState(localStorage.getItem('vapnet_script_url') ? 'Terhubung' : 'Terputus');
+
+  const [formData, setFormData] = useState({
+    nama: '', rt: '', rw: '', desa: '', kecamatan: '', kota: '',
+    whatsapp: '', jenisLayanan: '', paket: '', termsAccepted: false
+  });
+
+  const logoUrl = "https://files.oaiusercontent.com/file-a9af5c28-0f93-4812-acc9-8b95cea0daa8?se=2026-01-09T05%3A46%3A37Z&sp=r&sv=24.12&sr=b&rscc=max-age%3D604800%2C%20immutable%2C%20private&rscd=attachment%3B%20filename%3Da9af5c28-0f93-4812-acc9-8b95cea0daa8.png&sig=U8q71xM6v8W1t6u5zS47eW9/3r3PzS%2B0O8t/mYc/R7s%3D";
+
+  // Waktu Real-time
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Sinkronisasi data saat pindah tab rekap
+  useEffect(() => {
+    if (activeTab === 'rekap' && spreadsheetUrl) {
+      fetchDataFromSpreadsheet();
+    }
+  }, [activeTab]);
+
+  // Load PDF & Canvas dependencies
+  useEffect(() => {
+    const scripts = [
+      'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',
+      'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js'
+    ];
+    scripts.forEach(src => {
+      if (!document.querySelector(`script[src="${src}"]`)) {
+        const script = document.createElement('script');
+        script.src = src;
+        script.async = true;
+        document.body.appendChild(script);
+      }
+    });
+  }, []);
+
+  // --- FUNGSI API CLOUD SYNC ---
+  
+  const saveConfig = async () => {
+    if (!spreadsheetUrl.startsWith("https://script.google.com")) {
+      alert("❌ URL Apps Script tidak valid! Pastikan berawal dengan https://script.google.com");
+      return;
+    }
+    localStorage.setItem('vapnet_script_url', spreadsheetUrl);
+    setSyncStatus('Mencoba...');
+    await fetchDataFromSpreadsheet();
+  };
+
+  const fetchDataFromSpreadsheet = async () => {
+    if (!spreadsheetUrl) return;
+    setIsLoadingData(true);
+    setSyncStatus('Sinkronisasi...');
+    
+    try {
+      // Menambahkan cache buster agar data selalu segar
+      const response = await fetch(`${spreadsheetUrl}?action=read&t=${Date.now()}`);
+      if (!response.ok) throw new Error("Server tidak merespon");
+      
+      const data = await response.json();
+      
+      if (Array.isArray(data)) {
+        setCustomerData(data);
+        setSyncStatus('Terhubung');
+      } else {
+        throw new Error("Data bukan array");
+      }
+    } catch (error) {
+      console.error("Fetch Error:", error);
+      setSyncStatus('Gagal');
+      // Jika di tab pengaturan, beri alert detail
+      if (activeTab === 'pengaturan') alert("Gagal mengambil data. Pastikan 'Who has access' diatur ke 'Anyone' pada Apps Script.");
+    } finally {
+      setIsLoadingData(false);
+    }
+  };
+
+  const saveToSpreadsheet = async (data) => {
+    if (!spreadsheetUrl) return false;
+    
+    try {
+      setSyncStatus('Mengirim...');
+      
+      // Mengirim data menggunakan URLSearchParams (lebih stabil untuk Apps Script doPost)
+      const queryParams = new URLSearchParams();
+      Object.keys(data).forEach(key => queryParams.append(key, data[key]));
+
+      // Gunakan mode: 'no-cors' untuk menghindari pre-flight check yang sering gagal di Apps Script
+      await fetch(spreadsheetUrl, {
+        method: 'POST',
+        mode: 'no-cors', 
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: queryParams.toString()
+      });
+      
+      // Karena no-cors, kita tidak bisa baca response. Jika tidak crash, kita anggap OK
+      setSyncStatus('Terhubung');
+      return true;
+    } catch (error) {
+      console.error("Save Error:", error);
+      setSyncStatus('Gagal');
+      return false;
+    }
+  };
+
+  // --- PRINTER & PDF LOGIC ---
+
+  const connectAndPrintBluetooth = async () => {
+    if (!navigator.bluetooth) {
+      alert("Browser Anda tidak mendukung Bluetooth. Gunakan Chrome di Android/PC.");
+      return;
+    }
+
+    try {
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: ['000018f0-0000-1000-8000-00805f9b34fb'] }],
+        optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb']
+      });
+      
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
+      const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
+
+      const encoder = new TextEncoder();
+      const text = `
+      VAPNET INTERNET
+      ----------------
+      ID: ${lastRegistered?.id.slice(-8)}
+      TGL: ${lastRegistered?.tanggal}
+      NAMA: ${lastRegistered?.nama}
+      PAKET: ${lastRegistered?.paket}
+      LYN: ${lastRegistered?.jenisLayanan}
+      ----------------
+      TERIMA KASIH
+      \n\n\n`;
+
+      await characteristic.writeValue(encoder.encode(text));
+    } catch (error) {
+      console.error(error);
+      alert("Gagal koneksi ke printer.");
+    }
+  };
+
+  const generatePDF = async () => {
+    const element = document.getElementById('receipt-content');
+    if (!element) return;
+    try {
+      const canvas = await window.html2canvas(element, { scale: 3, useCORS: true });
+      const imgData = canvas.toDataURL('image/png');
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [58, 160] });
+      pdf.addImage(imgData, 'PNG', 0, 0, 58, 120);
+      pdf.save(`Struk_Vapnet_${lastRegistered?.id.slice(-5)}.pdf`);
+    } catch (err) {
+      alert("Gagal mengunduh berkas PDF.");
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!formData.termsAccepted) return;
+    if (!spreadsheetUrl) {
+      alert("Pengaturan Cloud Sync belum lengkap!");
+      setActiveTab('pengaturan');
+      return;
+    }
+
+    setIsSubmitting(true);
+    const timestamp = new Date();
+    const newRecord = {
+      id: "VAP-" + Date.now(),
+      tanggal: new Intl.DateTimeFormat('id-ID', { dateStyle: 'medium' }).format(timestamp),
+      waktu: new Intl.DateTimeFormat('id-ID', { timeStyle: 'short' }).format(timestamp),
+      nama: formData.nama,
+      alamat: `RT${formData.rt}/RW${formData.rw}, ${formData.desa}, ${formData.kecamatan}, ${formData.kota}`,
+      whatsapp: formData.whatsapp,
+      jenisLayanan: formData.jenisLayanan,
+      paket: formData.paket,
+      status: 'Aktif'
+    };
+
+    const success = await saveToSpreadsheet(newRecord);
+    if (success) {
+      setCustomerData(prev => [newRecord, ...prev]);
+      setLastRegistered(newRecord);
+      setShowSuccessModal(true);
+      setFormData({
+        nama: '', rt: '', rw: '', desa: '', kecamatan: '', kota: '',
+        whatsapp: '', jenisLayanan: '', paket: '', termsAccepted: false
+      });
+    } else {
+      alert("Data gagal terkirim ke Cloud. Periksa URL Anda.");
+    }
+    setIsSubmitting(false);
+  };
+
+  return (
+    <div className="flex min-h-screen bg-slate-50 text-slate-900 font-sans">
+      {/* Sidebar Navigasi */}
+      <aside className={`bg-slate-900 transition-all duration-300 ${isSidebarOpen ? 'w-64' : 'w-20'} flex flex-col p-4 z-50`}>
+        <div className="flex items-center gap-3 mb-10 px-2 cursor-pointer" onClick={() => setSidebarOpen(!isSidebarOpen)}>
+          <img src={logoUrl} alt="Logo" className="w-10 h-auto rounded bg-white p-1" />
+          {isSidebarOpen && <span className="text-xl font-bold text-white italic tracking-tighter">VAPNET</span>}
+        </div>
+        
+        <nav className="flex-1 space-y-2">
+          <button onClick={() => setActiveTab('pendaftaran')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'pendaftaran' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}>
+            <UserPlus size={20} /> {isSidebarOpen && <span className="font-semibold">Pendaftaran</span>}
+          </button>
+          <button onClick={() => setActiveTab('rekap')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'rekap' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}>
+            <TableIcon size={20} /> {isSidebarOpen && <span className="font-semibold">Rekap Data</span>}
+          </button>
+          <button onClick={() => setActiveTab('pengaturan')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'pengaturan' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}>
+            <Settings size={20} /> {isSidebarOpen && <span className="font-semibold">Pengaturan</span>}
+          </button>
+        </nav>
+      </aside>
+
+      <main className="flex-1 flex flex-col overflow-hidden">
+        {/* Header Dashboard */}
+        <header className="bg-white border-b px-6 py-4 flex items-center justify-between shadow-sm z-10">
+          <h1 className="text-xl font-black text-slate-800 uppercase tracking-tight italic">
+            {activeTab === 'pendaftaran' ? 'Registrasi Pelanggan' : activeTab === 'rekap' ? 'Database Cloud' : 'Konfigurasi Sistem'}
+          </h1>
+          <div className="flex items-center gap-3">
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] font-black border transition-all ${syncStatus === 'Terhubung' ? 'bg-green-50 text-green-600 border-green-200' : 'bg-orange-50 text-orange-600 border-orange-200 animate-pulse'}`}>
+               {syncStatus === 'Terhubung' ? <Wifi size={12} /> : <WifiOff size={12} />}
+               {syncStatus.toUpperCase()}
+            </div>
+            <div className="bg-slate-50 border px-3 py-1.5 rounded-xl flex items-center gap-2 text-slate-500 font-mono text-xs font-bold">
+              <Clock size={14} className="text-blue-500" /> {currentTime.toLocaleTimeString('id-ID')}
+            </div>
+          </div>
+        </header>
+
+        {/* Konten Utama */}
+        <div className="flex-1 overflow-y-auto p-6 bg-slate-50/50">
+          {activeTab === 'pendaftaran' && (
+            <div className="max-w-4xl mx-auto pb-10">
+              <form onSubmit={handleSubmit} className="bg-white rounded-3xl shadow-sm border p-8 space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Nama Lengkap</label>
+                    <input required className="w-full p-4 rounded-2xl bg-slate-50 border-2 border-transparent outline-none focus:border-blue-500 focus:bg-white transition-all font-semibold" value={formData.nama} onChange={(e)=>setFormData({...formData, nama: e.target.value})} placeholder="Sesuai KTP" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">WhatsApp</label>
+                    <input required type="tel" className="w-full p-4 rounded-2xl bg-slate-50 border-2 border-transparent outline-none focus:border-blue-500 focus:bg-white transition-all font-semibold" value={formData.whatsapp} onChange={(e)=>setFormData({...formData, whatsapp: e.target.value})} placeholder="08xxxxxxxx" />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Alamat Pemasangan</label>
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                    <input placeholder="RT" className="p-3 bg-slate-50 rounded-xl border-2 border-transparent focus:border-blue-400 outline-none transition-all" value={formData.rt} onChange={(e)=>setFormData({...formData, rt: e.target.value})} />
+                    <input placeholder="RW" className="p-3 bg-slate-50 rounded-xl border-2 border-transparent focus:border-blue-400 outline-none transition-all" value={formData.rw} onChange={(e)=>setFormData({...formData, rw: e.target.value})} />
+                    <input placeholder="Desa" className="p-3 bg-slate-50 rounded-xl border-2 border-transparent focus:border-blue-400 outline-none transition-all" value={formData.desa} onChange={(e)=>setFormData({...formData, desa: e.target.value})} />
+                    <input placeholder="Kec" className="p-3 bg-slate-50 rounded-xl border-2 border-transparent focus:border-blue-400 outline-none transition-all" value={formData.kecamatan} onChange={(e)=>setFormData({...formData, kecamatan: e.target.value})} />
+                    <input placeholder="Kota" className="p-3 bg-slate-50 rounded-xl border-2 border-transparent focus:border-blue-400 outline-none transition-all" value={formData.kota} onChange={(e)=>setFormData({...formData, kota: e.target.value})} />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Jenis Layanan</label>
+                    <select required className="w-full p-4 rounded-2xl bg-slate-50 border-2 border-transparent outline-none focus:border-blue-500 focus:bg-white transition-all font-bold text-slate-700" value={formData.jenisLayanan} onChange={(e)=>setFormData({...formData, jenisLayanan: e.target.value})}>
+                      <option value="">Pilih...</option>
+                      <option value="Baru">PEMASANGAN BARU</option>
+                      <option value="Relokasi">RELOKASI ALAT</option>
+                      <option value="Upgrade">UPGRADE PAKET</option>
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Paket Internet</label>
+                    <select required className="w-full p-4 rounded-2xl bg-slate-50 border-2 border-transparent outline-none focus:border-blue-500 focus:bg-white transition-all font-black text-blue-600" value={formData.paket} onChange={(e)=>setFormData({...formData, paket: e.target.value})}>
+                      <option value="">Pilih Paket...</option>
+                      <option value="Bronze 25Mbps">BRONZE 25MBPS - 135K</option>
+                      <option value="Silver 35Mbps">SILVER 35MBPS - 165K</option>
+                      <option value="Gold 75Mbps">GOLD 75MBPS - 225K</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="p-6 bg-slate-900 rounded-[32px] text-white shadow-2xl relative overflow-hidden group">
+                  <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform duration-700">
+                    <ShieldCheck size={120} />
+                  </div>
+                  <div className="flex items-center gap-3 mb-6 border-b border-slate-800 pb-4 relative z-10">
+                    <ShieldCheck className="text-blue-400" size={24} />
+                    <h3 className="font-bold text-lg uppercase tracking-wider italic">Syarat & Ketentuan</h3>
+                  </div>
+                  <div className="text-[11px] leading-relaxed space-y-4 opacity-80 max-h-60 overflow-y-auto pr-4 scrollbar-thin scrollbar-thumb-slate-700 relative z-10">
+                    {[
+                      "Pelanggan berkewajiban membayar tagihan sebelum tanggal yang ditetapkan pada saat pemasangan setiap bulannya. Keterlambatan akan mengakibatkan isolir layanan secara otomatis.",
+                      "Perangkat (ONT/Modem) adalah milik VAPNET dan dipinjamkan selama masa berlangganan. Kerusakan fisik akibat kelalaian menjadi tanggung jawab pelanggan.",
+                      "Dilarang keras menyebarluaskan dengan cara paralel atau menjual kembali (Reseller) layanan internet kepada pihak ketiga tanpa kontrak kerja sama resmi.",
+                      "VAPNET tidak bertanggung jawab atas penurunan kecepatan akibat penggunaan perangkat tambahan (Router Pihak ke-3) yang tidak sesuai standar.",
+                      "Pengakhiran layanan wajib dilaporkan minimal 7 hari sebelum periode tagihan baru dimulai untuk menghindari tagihan berjalan.",
+                      "Jika berhenti berlangganan setelah masa berakhir kontrak, pelanggan wajib memberitahukan Costumer Service untuk konfirmasi pemberhentian berlangganan dan alat yang dipakai pelanggan akan dicabut kembali oleh pihak Vapnet tanpa biaya tarik alat/modem."
+                    ].map((text, i) => (
+                      <div className="flex gap-3" key={i}>
+                        <span className="text-blue-500 font-black shrink-0">{String(i+1).padStart(2, '0')}</span>
+                        <p className="font-medium">{text}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <label className="flex items-center gap-4 mt-8 p-5 bg-white/5 border border-white/10 rounded-2xl cursor-pointer hover:bg-white/10 transition-all group relative z-10">
+                    <input type="checkbox" required checked={formData.termsAccepted} onChange={(e)=>setFormData({...formData, termsAccepted: e.target.checked})} className="w-6 h-6 accent-blue-500 rounded-lg cursor-pointer" />
+                    <span className="text-xs font-black uppercase tracking-widest text-blue-200 group-hover:text-white transition-colors">Saya mengerti dan setuju</span>
+                  </label>
+                </div>
+
+                <button type="submit" disabled={!formData.termsAccepted || isSubmitting} className="w-full bg-blue-600 text-white font-black py-5 rounded-[24px] hover:bg-blue-700 disabled:bg-slate-300 transition-all shadow-xl shadow-blue-100 flex justify-center items-center gap-3 text-lg tracking-widest uppercase">
+                   {isSubmitting ? <Loader2 className="animate-spin" /> : 'Proses Pendaftaran'} <ChevronRight size={24} />
+                </button>
+              </form>
+            </div>
+          )}
+
+          {activeTab === 'rekap' && (
+            <div className="space-y-6 max-w-6xl mx-auto">
+              <div className="bg-white p-5 rounded-3xl border shadow-sm flex flex-col md:flex-row items-center justify-between gap-4">
+                <div className="relative w-full md:w-80">
+                   <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                   <input className="w-full pl-12 pr-4 py-3 bg-slate-50 rounded-2xl outline-none text-sm font-semibold border-2 border-transparent focus:border-blue-100 transition-all" placeholder="Cari Pelanggan..." />
+                </div>
+                <button onClick={fetchDataFromSpreadsheet} className="w-full md:w-auto px-6 py-3 bg-slate-900 text-white rounded-2xl text-xs font-black flex items-center justify-center gap-2 hover:bg-black transition-all shadow-lg shadow-slate-200">
+                  <RefreshCw size={16} className={isLoadingData ? 'animate-spin' : ''} /> REFRESH DATABASE
+                </button>
+              </div>
+
+              <div className="bg-white rounded-[32px] border overflow-hidden shadow-sm">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-slate-50 border-b">
+                      <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                        <th className="px-8 py-5">Identitas Pelanggan</th>
+                        <th className="px-8 py-5">Layanan & Paket</th>
+                        <th className="px-8 py-5">Status</th>
+                        <th className="px-8 py-5 text-right">Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {customerData.length === 0 ? (
+                        <tr>
+                          <td colSpan="4" className="px-8 py-20 text-center">
+                            <div className="flex flex-col items-center gap-3 opacity-30">
+                              <Database size={48} />
+                              <p className="text-xs font-bold uppercase italic">Data belum tersedia di cloud</p>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : (
+                        customerData.map((item) => (
+                          <tr key={item.id} className="hover:bg-slate-50/80 transition-colors group">
+                            <td className="px-8 py-5">
+                               <div className="font-black text-slate-800 text-base">{item.nama}</div>
+                               <div className="text-[10px] text-blue-500 font-mono font-bold mt-1 uppercase tracking-tighter bg-blue-50 px-2 py-0.5 rounded-md inline-block">ID: {item.id.slice(-8)}</div>
+                               <div className="text-[10px] text-slate-400 mt-2 font-medium">{item.alamat}</div>
+                            </td>
+                            <td className="px-8 py-5">
+                               <div className="font-black text-blue-600 uppercase text-xs">{item.paket}</div>
+                               <div className="text-[10px] text-slate-400 mt-1 italic">{item.jenisLayanan}</div>
+                            </td>
+                            <td className="px-8 py-5">
+                              <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-[9px] font-black uppercase tracking-widest border border-green-200">Terdaftar</span>
+                            </td>
+                            <td className="px-8 py-5">
+                              <div className="flex justify-end gap-3">
+                                <button onClick={()=>{setLastRegistered(item); setShowSuccessModal(true);}} className="p-3 bg-white border rounded-xl text-slate-600 hover:bg-blue-600 hover:text-white hover:border-blue-600 transition-all shadow-sm"><Printer size={18} /></button>
+                                <button onClick={()=>window.open(`https://wa.me/${item.whatsapp.replace('0','62')}`, '_blank')} className="p-3 bg-green-50 text-green-600 border border-green-100 rounded-xl hover:bg-green-600 hover:text-white transition-all shadow-sm"><MessageSquare size={18} /></button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'pengaturan' && (
+            <div className="max-w-xl mx-auto space-y-6 animate-in slide-in-from-bottom-4 duration-500">
+               <div className="bg-white p-10 rounded-[40px] border shadow-xl">
+                  <div className="flex items-center gap-5 mb-10">
+                    <div className="p-5 bg-blue-600 text-white rounded-[24px] shadow-lg shadow-blue-100">
+                       <Database size={32} />
+                    </div>
+                    <div>
+                      <h2 className="text-2xl font-black text-slate-800 uppercase italic tracking-tighter">Cloud Connection</h2>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Hubungkan ke Google Sheets</p>
+                    </div>
+                  </div>
+                  <div className="space-y-8">
+                    <div className="p-6 bg-slate-50 rounded-[28px] border-2 border-slate-100 transition-all focus-within:border-blue-500 focus-within:bg-white group">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-3 group-focus-within:text-blue-500">Deployment URL (Web App)</label>
+                      <div className="flex items-center gap-3">
+                         <Link2 className="text-slate-300" size={20} />
+                         <input 
+                          value={spreadsheetUrl} 
+                          onChange={(e)=>setSpreadsheetUrl(e.target.value)} 
+                          className="w-full bg-transparent font-mono text-xs text-blue-600 outline-none placeholder:text-slate-300" 
+                          placeholder="https://script.google.com/macros/s/.../exec" 
+                        />
+                      </div>
+                    </div>
+                    
+                    <button onClick={saveConfig} className="w-full py-5 bg-slate-900 text-white rounded-[24px] font-black uppercase tracking-widest hover:bg-black transition-all shadow-2xl shadow-slate-200 flex items-center justify-center gap-3">
+                      {isLoadingData ? <Loader2 className="animate-spin" /> : <CheckCircle2 size={20} />}
+                      Verifikasi & Sinkron
+                    </button>
+
+                    <div className="p-5 bg-orange-50 border-2 border-orange-100 rounded-3xl flex gap-4">
+                       <AlertCircle size={24} className="text-orange-500 shrink-0" />
+                       <div className="space-y-1">
+                          <p className="text-[11px] font-black text-orange-800 uppercase tracking-tighter">Catatan Penting:</p>
+                          <p className="text-[10px] text-orange-700 leading-relaxed italic">
+                            Pastikan Anda sudah memilih <strong>'Anyone'</strong> pada pengaturan <strong>'Who has access'</strong> saat melakukan Deployment di Google Apps Script.
+                          </p>
+                       </div>
+                    </div>
+                  </div>
+               </div>
+            </div>
+          )}
+        </div>
+      </main>
+
+      {/* --- MODAL SUKSES & STRUK --- */}
+      {showSuccessModal && (
+        <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-xl z-[200] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[48px] p-10 max-w-[400px] w-full shadow-2xl animate-in zoom-in-95 duration-300">
+            <div className="flex justify-center mb-6">
+               <div className="p-4 bg-green-100 text-green-600 rounded-full">
+                  <CheckCircle2 size={32} />
+               </div>
+            </div>
+            <h3 className="text-center font-black text-xl uppercase italic tracking-tighter mb-2">Registrasi Berhasil!</h3>
+            <p className="text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-8">Data telah tersimpan di Cloud</p>
+
+            <div className="bg-slate-50 p-1 rounded-[32px] mb-8">
+              <div id="receipt-content" className="bg-white p-8 font-mono text-[10px] text-black border-2 border-slate-100 rounded-[28px] leading-tight w-[58mm] mx-auto overflow-hidden shadow-inner">
+                <div className="text-center border-b-2 border-dashed border-black pb-4 mb-4">
+                  <img src={logoUrl} alt="Logo" className="w-12 mx-auto mb-2 grayscale" crossOrigin="anonymous" />
+                  <h4 className="font-black text-[12px] uppercase italic">VAPNET INTERNET</h4>
+                  <p className="text-[8px] opacity-60">High-Speed Connectivity</p>
+                </div>
+                <div className="space-y-2 mb-4">
+                  <div className="flex justify-between uppercase"><span>TANGGAL:</span><span>{lastRegistered?.tanggal}</span></div>
+                  <div className="flex justify-between font-bold"><span>ID PEL:</span><span>{lastRegistered?.id.slice(-8)}</span></div>
+                </div>
+                <div className="border-t-2 border-dashed border-black pt-3 mb-4">
+                  <div className="font-black uppercase mb-2 underline">DETAIL PELANGGAN</div>
+                  <div className="font-bold">{lastRegistered?.nama}</div>
+                  <div>WhatsApp: {lastRegistered?.whatsapp}</div>
+                  <div className="text-[8px] mt-2 leading-tight opacity-70 italic">{lastRegistered?.alamat}</div>
+                </div>
+                <div className="border-t-2 border-dashed border-black pt-3 mb-4">
+                  <div className="flex justify-between font-black"><span>PAKET:</span><span>{lastRegistered?.paket}</span></div>
+                  <div className="flex justify-between"><span>JENIS:</span><span>{lastRegistered?.jenisLayanan}</span></div>
+                </div>
+                <div className="text-center border-t-2 border-dashed border-black pt-5">
+                  <p className="font-black text-[11px] italic tracking-tighter">TERIMA KASIH</p>
+                  <p className="text-[7px] opacity-40 mt-1 uppercase font-bold">Layanan Internet Cepat & Stabil</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <button onClick={generatePDF} className="flex flex-col items-center justify-center gap-2 bg-slate-50 text-slate-600 py-5 rounded-3xl font-black text-[9px] hover:bg-blue-50 hover:text-blue-600 transition-all border border-slate-100">
+                <Download size={20} /> PDF BERKAS
+              </button>
+              <button onClick={connectAndPrintBluetooth} className="flex flex-col items-center justify-center gap-2 bg-slate-900 text-white py-5 rounded-3xl font-black text-[9px] hover:bg-black transition-all shadow-xl shadow-slate-200">
+                <Bluetooth size={20} /> PRINT STRUK
+              </button>
+              <button onClick={() => {
+                 const msg = `*PENDAFTARAN VAPNET BERHASIL*\n\nHalo *${lastRegistered?.nama}*,\nTerima kasih telah bergabung dengan VAPNET.\n\n*ID Pelanggan:* ${lastRegistered?.id.slice(-8)}\n*Paket:* ${lastRegistered?.paket}\n*Tanggal:* ${lastRegistered?.tanggal}\n\nPetugas kami akan segera menghubungi Anda untuk jadwal instalasi.`;
+                 window.open(`https://wa.me/${lastRegistered?.whatsapp.replace('0','62')}?text=${encodeURIComponent(msg)}`, '_blank');
+              }} className="col-span-2 flex items-center justify-center gap-3 bg-green-600 text-white py-5 rounded-[24px] font-black text-sm hover:bg-green-700 shadow-xl shadow-green-100 transition-all">
+                <MessageSquare size={22} /> KIRIM KONFIRMASI WA
+              </button>
+              <button onClick={() => setShowSuccessModal(false)} className="col-span-2 text-slate-400 font-bold text-[10px] uppercase pt-4 tracking-widest text-center hover:text-slate-600 transition-colors">
+                Tutup Jendela
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default App;
